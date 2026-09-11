@@ -35,7 +35,93 @@ from rich.console import Group
 from rich.box import HEAVY_EDGE, ROUNDED, DOUBLE_EDGE
 from datetime import datetime
 import pytz
-import gmalg
+import re
+import zipfile
+import json
+
+# ==================== COMPAT: batched polyfill ====================
+
+def _batched(iterable, n):
+    it_obj = iter(iterable)
+    while True:
+        batch = list(it.islice(it_obj, n))
+        if not batch:
+            break
+        yield batch
+
+# ==================== VENDORED ZUC CIPHER (gmalg fallback) ====================
+
+_ZUC_S0 = bytes([
+    0x3e,0x72,0x5b,0x47,0xca,0xe0,0x00,0x33,0x04,0xd1,0x54,0x98,0x09,0xb9,0x6d,0xcb,
+    0x7b,0x1b,0xf9,0x32,0xaf,0x9d,0x6a,0xa5,0xb8,0x2d,0xfc,0x1d,0x08,0x53,0x03,0x90,
+    0x4d,0x4e,0x84,0x99,0xe4,0xce,0xd9,0x91,0xdd,0xb6,0x85,0x48,0x8b,0x29,0x6e,0xac,
+    0xcd,0xc1,0xf8,0x1e,0x73,0x43,0x69,0xc6,0xb5,0xbd,0xfd,0x39,0x63,0x20,0xd4,0x38,
+    0x76,0x7d,0xb2,0xa7,0xcf,0xed,0x57,0xc5,0xf3,0x2c,0xbb,0x14,0x21,0x06,0x55,0x9b,
+    0xe3,0xef,0x5e,0x31,0x4f,0x7f,0x5a,0xa4,0x0d,0x82,0x51,0x49,0x5f,0xba,0x58,0x1c,
+    0x4a,0x16,0xd5,0x17,0xa8,0x92,0x24,0x1f,0x8c,0xff,0xd8,0xae,0x2e,0x01,0xd3,0xad,
+    0x3b,0x4b,0xda,0x46,0xeb,0xc9,0xde,0x9a,0x8f,0x87,0xd7,0x3a,0x80,0x6f,0x2f,0xc8,
+    0xb1,0xb4,0x37,0xf7,0x0a,0x22,0x13,0x28,0x7c,0xcc,0x3c,0x89,0xc7,0xc3,0x96,0x56,
+    0x07,0xbf,0x7e,0xf0,0x0b,0x2b,0x97,0x52,0x35,0x41,0x79,0x61,0xa6,0x4c,0x10,0xfe,
+    0xbc,0x26,0x95,0x88,0x8a,0xb0,0xa3,0xfb,0xc0,0x18,0x94,0xf2,0xe1,0xe5,0xe9,0x5d,
+    0xd0,0xdc,0x11,0x66,0x64,0x5c,0xec,0x59,0x42,0x75,0x12,0xf5,0x74,0x9c,0xaa,0x23,
+    0x0e,0x86,0xab,0xbe,0x2a,0x02,0xe7,0x67,0xe6,0x44,0xa2,0x6c,0xc2,0x93,0x9f,0xf1,
+    0xf6,0xfa,0x36,0xd2,0x50,0x68,0x9e,0x62,0x71,0x15,0x3d,0xd6,0x40,0xc4,0xe2,0x0f,
+    0x8e,0x83,0x77,0x6b,0x25,0x05,0x3f,0x0c,0x30,0xea,0x70,0xb7,0xa1,0xe8,0xa9,0x65,
+    0x8d,0x27,0x1a,0xdb,0x81,0xb3,0xa0,0xf4,0x45,0x7a,0x19,0xdf,0xee,0x78,0x34,0x60
+])
+_ZUC_S1 = bytes([
+    0x55,0xc2,0x63,0x71,0x3b,0xc8,0x47,0x86,0x9f,0x3c,0xda,0x5b,0x29,0xaa,0xfd,0x77,
+    0x8c,0xc5,0x94,0x0c,0xa6,0x1a,0x13,0x00,0xe3,0xa8,0x16,0x72,0x40,0xf9,0xf8,0x42,
+    0x44,0x26,0x68,0x96,0x81,0xd9,0x45,0x3e,0x10,0x76,0xc6,0xa7,0x8b,0x39,0x43,0xe1,
+    0x3a,0xb5,0x56,0x2a,0xc0,0x6d,0xb3,0x05,0x22,0x66,0xbf,0xdc,0x0b,0xfa,0x62,0x48,
+    0xdd,0x20,0x11,0x06,0x36,0xc9,0xc1,0xcf,0xf6,0x27,0x52,0xbb,0x69,0xf5,0xd4,0x87,
+    0x7f,0x84,0x4c,0xd2,0x9c,0x57,0xa4,0xbc,0x4f,0x9a,0xdf,0xfe,0xd6,0x8d,0x7a,0xeb,
+    0x2b,0x53,0xd8,0x5c,0xa1,0x14,0x17,0xfb,0x23,0xd5,0x7d,0x30,0x67,0x73,0x08,0x09,
+    0xee,0xb7,0x70,0x3f,0x61,0xb2,0x19,0x8e,0x4e,0xe5,0x4b,0x93,0x8f,0x5d,0xdb,0xa9,
+    0xad,0xf1,0xae,0x2e,0xcb,0x0d,0xfc,0xf4,0x2d,0x46,0x6e,0x1d,0x97,0xe8,0xd1,0xe9,
+    0x4d,0x37,0xa5,0x75,0x5e,0x83,0x9e,0xab,0x82,0x9d,0xb9,0x1c,0xe0,0xcd,0x49,0x89,
+    0x01,0xb6,0xbd,0x58,0x24,0xa2,0x5f,0x38,0x78,0x99,0x15,0x90,0x50,0xb8,0x95,0xe4,
+    0xd0,0x91,0xc7,0xce,0xed,0x0f,0xb4,0x6f,0xa0,0xcc,0xf0,0x02,0x4a,0x79,0xc3,0xde,
+    0xa3,0xef,0xea,0x51,0xe6,0x6b,0x18,0xec,0x1b,0x2c,0x80,0xf7,0x74,0xe7,0xff,0x21,
+    0x5a,0x6a,0x54,0x1e,0x41,0x31,0x92,0x35,0xc4,0x33,0x07,0x0a,0xba,0x7e,0x0e,0x34,
+    0x88,0xb1,0x98,0x7c,0xf3,0x3d,0x60,0x6c,0x7b,0xca,0xd3,0x1f,0x32,0x65,0x04,0x28,
+    0x64,0xbe,0x85,0x9b,0x2f,0x59,0x8a,0xd7,0xb0,0x25,0xac,0xaf,0x12,0x03,0xe2,0xf2
+])
+_ZUC_D = [0b100010011010111,0b010011010111100,0b110001001101011,0b001001101011110,
+    0b101011110001001,0b011010111100010,0b111000100110101,0b000100110101111,
+    0b100110101111000,0b010111100010011,0b110101111000100,0b001101011110001,
+    0b101111000100110,0b011110001001101,0b111100010011010,0b100011110101100]
+_ZUC_MOD = 0x7fffffff
+def _zuc_rol32(x,n): return ((x<<n)&0xffffffff)|(x>>(32-n))
+def _zuc_bs(x):
+    return (_ZUC_S0[(x>>24)&0xff]<<24)^(_ZUC_S1[(x>>16)&0xff]<<16)^(_ZUC_S0[(x>>8)&0xff]<<8)^(_ZUC_S1[x&0xff])
+def _zuc_l1(x): return x^_zuc_rol32(x,2)^_zuc_rol32(x,10)^_zuc_rol32(x,18)^_zuc_rol32(x,24)
+def _zuc_l2(x): return x^_zuc_rol32(x,8)^_zuc_rol32(x,14)^_zuc_rol32(x,22)^_zuc_rol32(x,30)
+class _FallbackZUC:
+    def __init__(self,key,iv):
+        self._lfsr=[0]*16;self._r1=0;self._r2=0;S=self._lfsr
+        for i in range(16): S[i]=(key[i]<<23)|(_ZUC_D[i]<<8)|iv[i]
+        for _ in range(32):
+            x0=(S[15]>>15<<16)|(S[14]&0xffff);x1=((S[11]&0xffff)<<16)|(S[9]>>15);x2=((S[7]&0xffff)<<16)|(S[5]>>15)
+            self._lfsr_work(self._f(x0,x1,x2)>>1)
+        self.generate()
+    def _f(self,x0,x1,x2):
+        r1,r2=self._r1,self._r2;w=((x0^r1)+r2)&0xffffffff;w1=(r1+x1)&0xffffffff;w2=r2^x2
+        self._r1=_zuc_bs(_zuc_l1(((w1&0xffff)<<16)^(w2>>16)));self._r2=_zuc_bs(_zuc_l2(((w2&0xffff)<<16)^(w1>>16)));return w
+    def _lfsr_work(self,u=0):
+        S=self._lfsr;s16=((S[15]<<15)+(S[13]<<17)+(S[10]<<21)+(S[4]<<20)+(S[0]<<8)+S[0]+u)%_ZUC_MOD
+        S.append(_ZUC_MOD if s16==0 else s16);S.pop(0)
+    def generate(self):
+        S=self._lfsr;x0=(S[15]>>15<<16)|(S[14]&0xffff);x1=((S[11]&0xffff)<<16)|(S[9]>>15)
+        x2=((S[7]&0xffff)<<16)|(S[5]>>15);x3=((S[2]&0xffff)<<16)|(S[0]>>15)
+        z=self._f(x0,x1,x2)^x3;self._lfsr_work();return z.to_bytes(4,'big')
+_tz=_FallbackZUC(bytes.fromhex('3d4c4be96a82fdaeb58f641db17b455b'),bytes.fromhex('84319aa8de6915ca1f6bda6bfbd8c766'))
+assert _tz.generate()==bytes.fromhex('14f1c272'),"ZUC fallback self-test FAILED"
+try:
+    import gmalg as _gmalg_mod
+    _ZUC_CLASS = _gmalg_mod.ZUC
+except ImportError:
+    _ZUC_CLASS = _FallbackZUC
 from Crypto.Cipher import AES
 from Crypto.Cipher.AES import MODE_CBC
 from Crypto.Hash import SHA1
@@ -438,7 +524,7 @@ class PakCrypto:
             return (x2 >> 16 & MASK_32) % 32767
     @staticmethod
     def zuc_keystream() -> List[int]:
-        zuc = gmalg.ZUC(ZUC_KEY, ZUC_IV)
+        zuc = _ZUC_CLASS(ZUC_KEY, ZUC_IV)
         return [struct.unpack('>I', zuc.generate())[0] for _ in range(16)]
     @staticmethod
     def _xorxor(buffer, x) -> bytes:
@@ -516,7 +602,7 @@ class PakCrypto:
         assert len(ciphertext) % SM4.block_length() == 0
         key = PakCrypto._derive_sm4_key(file_path, encryption_method)
         sm4 = PakCrypto._sm4_context_for_key(key)
-        return bytes(it.chain.from_iterable((sm4.decrypt(x) for x in it.batched(ciphertext, SM4.block_length()))))
+        return bytes(it.chain.from_iterable((sm4.decrypt(x) for x in _batched(ciphertext, SM4.block_length()))))
     @staticmethod
     def decrypt_index(ciphertext, pak_info: TencentPakInfo) -> bytes:
         if pak_info.version > 7:
@@ -1090,7 +1176,7 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                                if old_entry.encrypted else unc)
                         nb = PakCompressedBlock.__new__(PakCompressedBlock)
                         nb.start = len(out_buf)
-                        nb.end = nb.start + unc
+                        nb.end = nb.start + enc
                         out_buf += bytes(orig_fc[ob.start: ob.start + enc])
                         new_blks.append(nb)
                     ne.compressed_blocks = new_blks
@@ -1449,19 +1535,27 @@ def repack_gamepatch(pak, repack_dir, output_pak):
     repack_pak_file_with_block_display(pak_file=pak, edited_root=repack_dir, output_path=output_pak)
 
 def ensure_directories(base_dir: Path):
+    (base_dir / "INPUT").mkdir(parents=True, exist_ok=True)
+    (base_dir / "DUMP").mkdir(parents=True, exist_ok=True)
     (base_dir / "PAK").mkdir(parents=True, exist_ok=True)
     (base_dir / "UNPACK").mkdir(parents=True, exist_ok=True)
     (base_dir / "REPACK").mkdir(parents=True, exist_ok=True)
     (base_dir / "RESULT").mkdir(parents=True, exist_ok=True)
-    # New directories for PAK TOOL (Options 3 & 4)
     pak_tool_dir = base_dir / "PAK TOOL"
     (pak_tool_dir / "EDIT").mkdir(parents=True, exist_ok=True)
     (pak_tool_dir / "UNPACK").mkdir(parents=True, exist_ok=True)
     (pak_tool_dir / "RESULT").mkdir(parents=True, exist_ok=True)
     (pak_tool_dir / "PAK").mkdir(parents=True, exist_ok=True)
 
+def clear_screen():
+    if os.name == 'nt':
+        os.system('cls')
+    else:
+        sys.stdout.write('\033[2J\033[H\033[3J')
+        sys.stdout.flush()
+
 def print_banner():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    clear_screen()
     console.print("[bold cyan]========================================[/bold cyan]")
     console.print("[bold yellow]    PAK TOOL - UNPACK & REPACK[/bold yellow]")
     console.print("[bold cyan]========================================[/bold cyan]")
@@ -1560,28 +1654,412 @@ def display_file_selector(title, folder_path, file_pattern="*.pak"):
         console.print("[bold red][ERROR] Please enter a valid number[/]")
         return None, None
 
+# ==================== UNIVERSAL DUMP / OBB / PROTECTION ====================
+
+_DUMP_SKIP_NAMES = {'dump_info.json', '.dravix_guard'}
+_OBB_ALIGN = 4096
+_GUARD_BANNER = b'\n[PAK TOOL] Protected by @TrnDravix\n'
+
+def _write_dump_info(dest: Path, source: Path):
+    info = {
+        'source': source.name,
+        'size': source.stat().st_size,
+        'format': 'unknown',
+        'dumped_at': datetime.now().isoformat(timespec='seconds'),
+    }
+    (dest / 'dump_info.json').write_text(json.dumps(info, indent=2), encoding='utf-8')
+
+def _update_dump_info(dest: Path, fmt: str):
+    info_path = dest / 'dump_info.json'
+    if info_path.exists():
+        info = json.loads(info_path.read_text(encoding='utf-8'))
+    else:
+        info = {}
+    info['format'] = fmt
+    file_count = 0
+    for _, _, files in os.walk(dest):
+        file_count += len(files)
+    info['files'] = max(file_count - 1, 0)
+    info_path.write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding='utf-8')
+
+def _extract_strings(data: bytes, min_len=4):
+    out, buf = [], []
+    for b in data:
+        if 32 <= b < 127:
+            buf.append(chr(b))
+        else:
+            if len(buf) >= min_len:
+                out.append(''.join(buf))
+            buf = []
+    if len(buf) >= min_len:
+        out.append(''.join(buf))
+    return out
+
+def _dump_strings_to_file(data: bytes, dest: Path, name='strings.txt'):
+    strs = _extract_strings(data)
+    if strs:
+        (dest / name).write_text('\n'.join(strs), encoding='utf-8')
+
+def _dump_elf(data: bytes, dest: Path) -> bool:
+    if len(data) < 16 or data[:4] != b'\x7fELF':
+        return False
+    (dest / 'format.txt').write_text('ELF', encoding='utf-8')
+    ei_class = data[4]
+    endian = 'little' if data[5] == 1 else 'big'
+    bits = 64 if ei_class == 2 else 32
+    hdr_len = 64 if ei_class == 2 else 52
+    if len(data) >= hdr_len:
+        e_type = int.from_bytes(data[16:18], endian)
+        e_machine = int.from_bytes(data[18:20], endian)
+    else:
+        e_type = e_machine = 0
+    (dest / 'elf_info.txt').write_text(
+        f'class=ELF{bits}\nendian={endian}\ntype=0x{e_type:04x}\nmachine=0x{e_machine:04x}',
+        encoding='utf-8')
+    return True
+
+def _dump_lua_chunk(data: bytes, dest: Path) -> bool:
+    sig = data[:4]
+    if sig not in (b'\x1bLua', b'\x1bLJ'):
+        return False
+    is_lj = sig == b'\x1bLJ'
+    version = data[4]
+    (dest / 'format.txt').write_text('LUAJIT' if is_lj else 'LUA', encoding='utf-8')
+    (dest / 'lua_version.txt').write_text(
+        'LuaJIT' if is_lj else f'Lua 5.{version}', encoding='utf-8')
+    return True
+
+def _dump_pak(src: Path, dest: Path) -> bool:
+    try:
+        pak = TencentPakFile(src)
+    except Exception:
+        return False
+    (dest / 'format.txt').write_text('TENCENT_PAK', encoding='utf-8')
+    pak.dump(dest)
+    try:
+        dump_unpacking_log(pak, dest / f'dump_{src.stem}.log')
+    except Exception:
+        pass
+    return True
+
+def _dump_zip_container(path: Path, dest: Path) -> bool:
+    try:
+        zin = zipfile.ZipFile(path)
+    except Exception:
+        return False
+    for zi in zin.infolist():
+        if zi.is_dir():
+            continue
+        target = dest / zi.filename
+        try:
+            target.resolve().relative_to(dest.resolve())
+        except ValueError:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.write_bytes(zin.read(zi))
+        except Exception:
+            continue
+    zin.close()
+    return True
+
+def _detect_format_from_head(head: bytes) -> str:
+    if head[:2] == b'PK':
+        return 'ZIP'
+    if head[:4] == b'\x7fELF':
+        return 'ELF'
+    if head[:4] in (b'\x1bLua', b'\x1bLJ'):
+        return 'LUA'
+    return 'UNKNOWN'
+
+def _is_protected_file(dump_dir: Path) -> bool:
+    guard = dump_dir / '.dravix_guard'
+    return guard.exists() and guard.stat().st_size > 0
+
+def dump_universal(source: Path, dump_root: Path) -> Tuple[Path, str]:
+    dest = dump_root / source.stem
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    _write_dump_info(dest, source)
+    with open(source, 'rb') as f:
+        head = f.read(16)
+    fmt = _detect_format_from_head(head)
+    handled = False
+    if fmt == 'ZIP':
+        handled = _dump_zip_container(source, dest)
+        if handled:
+            fmt = 'ZIP_CONTAINER'
+    if not handled:
+        handled = _dump_pak(source, dest)
+        if handled:
+            fmt = 'TENCENT_PAK'
+    if not handled and fmt == 'ELF':
+        data = open(source, 'rb').read()
+        handled = _dump_elf(data, dest)
+        if handled:
+            _dump_strings_to_file(data, dest, 'strings.txt')
+            fmt = 'ELF'
+    if not handled and fmt == 'LUA':
+        data = open(source, 'rb').read()
+        handled = _dump_lua_chunk(data, dest)
+        if handled:
+            _dump_strings_to_file(data, dest, 'strings.txt')
+            fmt = 'LUA'
+    if not handled:
+        shutil.copy2(source, dest / source.name)
+        data = open(source, 'rb').read()
+        _dump_strings_to_file(data, dest, 'strings.txt')
+        fmt = 'RAW_BINARY'
+    _update_dump_info(dest, fmt)
+    return dest, fmt
+
+def unpack_obb(path: Path, unpack_root: Path) -> Optional[Path]:
+    dest = unpack_root / path.stem
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    if _dump_zip_container(path, dest):
+        return dest
+    try:
+        pak = TencentPakFile(path, is_od=True)
+        pak.dump(dest)
+        dump_unpacking_log(pak, dest / f'dump_{path.stem}.log')
+        return dest
+    except Exception:
+        return None
+
+def _apply_protection_zip(built_zip: Path) -> None:
+    tmp_path = built_zip.parent / (built_zip.name + '.tmp')
+    try:
+        zin = zipfile.ZipFile(built_zip, 'r')
+        entries = [(zi, zin.read(zi.filename)) for zi in zin.infolist()]
+        zin.close()
+    except Exception:
+        return
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_STORED) as zout:
+            for zi, data in entries:
+                zout.writestr(zi, data)
+            zout.writestr('.dravix_guard', _GUARD_BANNER)
+        shutil.move(str(tmp_path), str(built_zip))
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+
+def _apply_protection(out_path: Path) -> None:
+    if out_path.suffix.lower() in ('.obb', '.apk', '.zip'):
+        _apply_protection_zip(out_path)
+    else:
+        try:
+            with open(out_path, 'ab') as f:
+                f.write(_GUARD_BANNER)
+        except Exception:
+            pass
+
+def repack_obb(unpack_dir: Path, out_root: Path) -> Optional[Path]:
+    out = out_root / (unpack_dir.name + '.obb')
+    try:
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zout:
+            for root, _, files in os.walk(unpack_dir):
+                for fn in files:
+                    full = Path(root) / fn
+                    rel = full.relative_to(unpack_dir)
+                    zout.write(str(full), rel.as_posix())
+        _apply_protection_zip(out)
+        return out
+    except Exception:
+        return None
+
+def _clean_for_repack(dump_dir: Path, clean_root: Path) -> Path:
+    clean = clean_root / dump_dir.name
+    if clean.exists():
+        shutil.rmtree(clean)
+    shutil.copytree(dump_dir, clean)
+    for pattern in [('.dravix_guard',), ('dump_info.json',), ('*.log',)]:
+        for item in clean.rglob(pattern[0]):
+            if item.exists() and item.is_file():
+                item.unlink()
+    return clean
+
+def repack_from_dump(dump_dir: Path, result_root: Path,
+                     original_search_dirs: List[Path]) -> Tuple[bool, str]:
+    if _is_protected_file(dump_dir):
+        return False, 'Dump is protected by anti-dump marker — cannot repack.'
+    info_path = dump_dir / 'dump_info.json'
+    fmt = 'UNKNOWN'
+    if info_path.exists():
+        info = json.loads(info_path.read_text(encoding='utf-8'))
+        fmt = info.get('format', 'UNKNOWN').upper()
+    clean = _clean_for_repack(dump_dir, result_root / '_repack_tmp')
+    try:
+        if fmt == 'TENCENT_PAK':
+            orig = None
+            for p in original_search_dirs:
+                cand = p / (dump_dir.name + '.pak')
+                if cand.exists():
+                    orig = cand
+                    break
+            if orig is None:
+                return False, f'No original .pak found for {dump_dir.name}'
+            pak = TencentPakFile(orig)
+            out = result_root / (dump_dir.name + '.pak')
+            repack_pak_file_full(pak, clean, out)
+            return True, str(out)
+        elif fmt in ('ZIP_CONTAINER', 'RAW_BINARY'):
+            out = result_root / (dump_dir.name + '.zip')
+            with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zout:
+                for root, _, files in os.walk(clean):
+                    for fn in files:
+                        full = Path(root) / fn
+                        rel = full.relative_to(clean)
+                        zout.write(str(full), rel.as_posix())
+            _apply_protection_zip(out)
+            return True, str(out)
+        else:
+            return False, f'Unknown dump format "{fmt}" — cannot determine repack strategy.'
+    finally:
+        shutil.rmtree(result_root / '_repack_tmp', ignore_errors=True)
+
 def main_menu():
     if getattr(sys, 'frozen', False):
         data_path = Path(sys.executable).parent
     else:
         data_path = Path(__file__).parent
     ensure_directories(data_path)
+    input_dir = data_path / 'INPUT'
+    dump_root = data_path / 'DUMP'
+    unpack_root = data_path / 'UNPACK'
+    result_root = data_path / 'RESULT'
+    pak_dir = data_path / 'PAK'
+    pak_tool_dir = data_path / 'PAK TOOL'
     while True:
         print_banner()
-        console.print("[bold]MAIN MENU[/bold]")
-        console.print("1. UNPACK ALL TYPES PAKS")
-        console.print("2. REPACK ALL TYPES PAKS")
-        console.print("3. REPACK ANY SIZE (EXISTING FILES)")
-        console.print("4. REPACK TO PATH (NEW FILES)")
-        console.print("5. DELETE FOLDER")
-        console.print("0. EXIT")
-        print()
-        choice = safe_input('ENTER YOUR CHOICE:').strip()
-        
+        console.print("[bold cyan]╔══════════════════════════════════════╗[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold yellow]          MAIN MENU[/bold yellow]                [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]╠══════════════════════════════════════╣[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 1. UNIVERSAL DUMP[/bold white]  [dim](INPUT/)[/dim]        [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 2. REPACK FROM DUMP[/bold white] [dim](DUMP/)[/dim]       [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 3. OBB UNPACK[/bold white]  [dim](INPUT/)[/dim]           [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 4. OBB REPACK[/bold white] [dim](UNPACK/)[/dim]          [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 5. UNPACK ALL TYPES PAKS[/bold white]  [dim](PAK/)[/dim]  [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 6. REPACK ALL TYPES PAKS[/bold white] [dim](PAK/)[/dim] [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 7. REPACK ANY SIZE[/bold white] [dim](PAK TOOL/)[/dim]     [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 8. REPACK TO PATH[/bold white] [dim](PAK TOOL/)[/dim]     [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 9. DELETE FOLDER[/bold white]                 [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] 0. EXIT[/bold white]                         [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]╚══════════════════════════════════════╝[/bold cyan]")
+        console.print()
+        choice = safe_input('[bold yellow]ENTER CHOICE: [/bold yellow]').strip()
+
         if choice == '1':
-            pak_dir = data_path / "PAK"
+            console.print(f'[bold cyan]📁 Scanning {input_dir}...[/bold cyan]')
+            inputs = [f for f in input_dir.iterdir() if f.is_file()]
+            if not inputs:
+                console.print('[bold #FFAA00]⚠ No files in INPUT/ — place files there first.[/bold #FFAA00]')
+                safe_input('\nPress Enter to continue...')
+                continue
+            console.print(f'[bold cyan]Found {len(inputs)} file(s) to dump[/bold cyan]')
+            success, fail = 0, 0
+            for src in inputs:
+                try:
+                    dest, fmt = dump_universal(src, dump_root)
+                    console.print(f'[bold green]✅ {src.name} → {fmt} → {dest.name}/[/bold green]')
+                    success += 1
+                except Exception as e:
+                    console.print(f'[bold red]❌ {src.name}: {escape(str(e))}[/bold red]')
+                    fail += 1
+            console.print(f'\n[bold cyan]📊 Dumped: {success}  Failed: {fail}[/bold cyan]')
+            safe_input('\nPress Enter to continue...')
+
+        elif choice == '2':
+            dumps = [d for d in dump_root.iterdir() if d.is_dir()]
+            if not dumps:
+                console.print('[bold #FFAA00]⚠ No dump folders in DUMP/ — run Universal Dump first.[/bold #FFAA00]')
+                safe_input('\nPress Enter to continue...')
+                continue
+            console.print('[bold cyan]📁 Dump folders:[/bold cyan]')
+            for i, d in enumerate(dumps, 1):
+                info = ''
+                info_path = d / 'dump_info.json'
+                if info_path.exists():
+                    try:
+                        info = json.loads(info_path.read_text(encoding='utf-8')).get('format', '')
+                    except Exception:
+                        pass
+                console.print(f'  {i}. {d.name} [dim]({info})[/dim]')
+            try:
+                idx = int(console.input('[bold yellow]Select dump number: [/bold yellow]')) - 1
+                if not (0 <= idx < len(dumps)):
+                    console.print('[bold red]❌ Invalid[/bold red]')
+                    safe_input('\nPress Enter to continue...')
+                    continue
+            except ValueError:
+                console.print('[bold red]❌ Invalid[/bold red]')
+                safe_input('\nPress Enter to continue...')
+                continue
+            selected = dumps[idx]
+            ok, msg = repack_from_dump(selected, result_root,
+                                       [input_dir, pak_dir])
+            if ok:
+                console.print(f'[bold green]✅ Repacked → {msg}[/bold green]')
+            else:
+                console.print(f'[bold red]❌ Repack failed: {msg}[/bold red]')
+            safe_input('\nPress Enter to continue...')
+
+        elif choice == '3':
+            obb_files = [f for f in input_dir.iterdir()
+                         if f.is_file() and f.suffix.lower() == '.obb']
+            if not obb_files:
+                console.print('[bold #FFAA00]⚠ No .obb files in INPUT/[/bold #FFAA00]')
+                safe_input('\nPress Enter to continue...')
+                continue
+            console.print(f'[bold cyan]Found {len(obb_files)} .obb file(s)[/bold cyan]')
+            for src in obb_files:
+                try:
+                    dest = unpack_obb(src, unpack_root)
+                    if dest:
+                        console.print(f'[bold green]✅ {src.name} → {dest.name}/[/bold green]')
+                    else:
+                        console.print(f'[bold yellow]⚠ {src.name}: Could not extract[/bold yellow]')
+                except Exception as e:
+                    console.print(f'[bold red]❌ {src.name}: {escape(str(e))}[/bold red]')
+            safe_input('\nPress Enter to continue...')
+
+        elif choice == '4':
+            unpacks = [d for d in unpack_root.iterdir() if d.is_dir()]
+            if not unpacks:
+                console.print('[bold #FFAA00]⚠ No folders in UNPACK/ — run OBB Unpack first.[/bold #FFAA00]')
+                safe_input('\nPress Enter to continue...')
+                continue
+            console.print('[bold cyan]📁 Unpacked folders:[/bold cyan]')
+            for i, d in enumerate(unpacks, 1):
+                console.print(f'  {i}. {d.name}')
+            try:
+                idx = int(console.input('[bold yellow]Select folder number: [/bold yellow]')) - 1
+                if not (0 <= idx < len(unpacks)):
+                    console.print('[bold red]❌ Invalid[/bold red]')
+                    safe_input('\nPress Enter to continue...')
+                    continue
+            except ValueError:
+                console.print('[bold red]❌ Invalid[/bold red]')
+                safe_input('\nPress Enter to continue...')
+                continue
+            try:
+                out = repack_obb(unpacks[idx], result_root)
+                if out:
+                    console.print(f'[bold green]✅ Repacked → {out}[/bold green]')
+                else:
+                    console.print('[bold red]❌ Repack failed[/bold red]')
+            except Exception as e:
+                console.print(f'[bold red]❌ {escape(str(e))}[/bold red]')
+            safe_input('\nPress Enter to continue...')
+
+        elif choice == '5':
             if not pak_dir.exists():
-                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/]")
+                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/bold red]")
                 safe_input('\nPress Enter to continue...')
                 continue
             pak_file, _ = display_file_selector("📁 Available .pak files to UNPACK:", pak_dir)
@@ -1597,17 +2075,15 @@ def main_menu():
                 log_path = unpack_path / f'Debug_{pak_file.stem}.log'
                 dump_unpacking_log(pak, log_path)
                 for dir_path, _ in pak._index.items():
-                    current_repack_path = repack_path / pak._mount_point / dir_path
-                    current_repack_path.mkdir(parents=True, exist_ok=True)
+                    (repack_path / pak._mount_point / dir_path).mkdir(parents=True, exist_ok=True)
                 console.print(f'[bold #00FF88]✅ SUCCESS: Extracted to {unpack_path}[/bold #00FF88]')
             except Exception as e:
                 console.print(f'[bold #FF0055]❌ Error: {escape(str(e))}[/bold #FF0055]')
             safe_input('\nPress Enter to continue...')
-            
-        elif choice == '2':
-            pak_dir = data_path / "PAK"
+
+        elif choice == '6':
             if not pak_dir.exists():
-                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/]")
+                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/bold red]")
                 safe_input('\nPress Enter to continue...')
                 continue
             pak_file, _ = display_file_selector("📁 Available .pak files to REPACK:", pak_dir)
@@ -1617,14 +2093,13 @@ def main_menu():
             repack_dir = data_path / "REPACK" / pak_file.stem
             if not repack_dir.exists():
                 console.print(f'[bold #FF0055]❌ ERROR: {repack_dir} not found.[/bold #FF0055]')
-                console.print('[#FFAA00]⚠ Please unpack first using option 1.[/#FFAA00]')
+                console.print('[#FFAA00]⚠ Please unpack first using option 5.[/#FFAA00]')
                 safe_input('\nPress Enter to continue...')
                 continue
             try:
                 console.print(f'[bold #00FFFF]🚀 Repacking {pak_file.name}...[/bold #00FFFF]')
                 pak = TencentPakFile(pak_file)
-                result_dir = data_path / "RESULT"
-                output_pak = result_dir / pak_file.name
+                output_pak = result_root / pak_file.name
                 mode = detect_repack_mode(pak_file)
                 if mode == 'MINI_OBB':
                     repack_mini_obb(pak, repack_dir, output_pak)
@@ -1638,119 +2113,81 @@ def main_menu():
                 import traceback
                 traceback.print_exc()
             safe_input('\nPress Enter to continue...')
-            
-        elif choice == '3':
-            # REPACK ANY SIZE - Uses PAK TOOL/EDIT folder - FULL REBUILD
-            pak_tool_dir = data_path / "PAK TOOL"
-            pak_dir = pak_tool_dir / "PAK"
-            edit_dir = pak_tool_dir / "EDIT"
-            result_dir = pak_tool_dir / "RESULT"
-            
+
+        elif choice == '7':
+            edit_dir = pak_tool_dir / 'EDIT'
+            result_dir = pak_tool_dir / 'RESULT'
             if not pak_dir.exists():
-                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/]")
+                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/bold red]")
                 safe_input('\nPress Enter to continue...')
                 continue
-            
-            pak_file, _ = display_file_selector("📁 Available .pak files to REPACK (EXISTING FILES):", pak_dir)
+            pak_file, _ = display_file_selector("📁 Available .pak files to REPACK (EXISTING):", pak_dir)
             if not pak_file:
                 safe_input('\nPress Enter to continue...')
                 continue
-            
             if not edit_dir.exists() or not any(edit_dir.iterdir()):
                 console.print(f'[bold #FF0055]❌ ERROR: No files in EDIT folder.[/bold #FF0055]')
-                console.print('[#FFAA00]⚠ Please place edited files in PAK TOOL/EDIT folder.[/#FFAA00]')
+                console.print('[#FFAA00]⚠ Place edited files in PAK TOOL/EDIT/.[/#FFAA00]')
                 safe_input('\nPress Enter to continue...')
                 continue
-            
             try:
-                console.print(f'[bold #00FFFF]🚀 Repacking {pak_file.name} (ANY SIZE - Full Rebuild)...[/bold #00FFFF]')
+                console.print(f'[bold #00FFFF]🚀 Repacking {pak_file.name} (ANY SIZE)...[/bold #00FFFF]')
                 pak = TencentPakFile(pak_file)
                 output_pak = result_dir / pak_file.name
-                
                 count = repack_pak_file_full(pak, edit_dir, output_pak)
-                
                 if count > 0:
-                    console.print(f'[bold #00FF88]✅ Repacked {count} files successfully![/bold #00FF88]')
-                    console.print(f'[bold #00FF88]📦 Output: {output_pak}[/bold #00FF88]')
+                    console.print(f'[bold #00FF88]✅ Repacked {count} files → {output_pak}[/bold #00FF88]')
                 else:
                     console.print('[bold #FF0055]❌ No files repacked![/bold #FF0055]')
-                    
             except Exception as e:
                 console.print(f'[bold #FF0055]❌ Repack failed:[/bold #FF0055] {e}')
                 import traceback
                 traceback.print_exc()
             safe_input('\nPress Enter to continue...')
-            
-        elif choice == '4':
-            # DIRECT REPACK - FORCE ADD files to target path
-            pak_tool_dir = data_path / "PAK TOOL"
-            pak_dir = pak_tool_dir / "PAK"
-            edit_dir = pak_tool_dir / "EDIT"
-            result_dir = pak_tool_dir / "RESULT"
-            
+
+        elif choice == '8':
+            edit_dir = pak_tool_dir / 'EDIT'
+            result_dir = pak_tool_dir / 'RESULT'
             if not pak_dir.exists():
-                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/]")
+                console.print(f"[bold red]ERROR: PAK folder not found at {pak_dir}[/bold red]")
                 safe_input('\nPress Enter to continue...')
                 continue
-            
             pak_file, _ = display_file_selector("📁 Available .pak files to REPACK TO PATH:", pak_dir)
             if not pak_file:
                 safe_input('\nPress Enter to continue...')
                 continue
-            
             if not edit_dir.exists() or not any(edit_dir.iterdir()):
                 console.print(f'[bold #FF0055]❌ ERROR: No files in EDIT folder.[/bold #FF0055]')
-                console.print('[#FFAA00]⚠ Please place files to add in PAK TOOL/EDIT folder.[/#FFAA00]')
+                console.print('[#FFAA00]⚠ Place files to add in PAK TOOL/EDIT/.[/#FFAA00]')
                 safe_input('\nPress Enter to continue...')
                 continue
-            
-            console.print()
-            console.print('[bold #FFFF00]📁 Enter the target path inside the PAK where files should be added:[/bold #FFFF00]')
+            console.print('[bold #FFFF00]📁 Enter target path inside the PAK:[/bold #FFFF00]')
             console.print('[dim]Example: Content/Lua/GameLua/Mod/BRMod/Gameplay/Core[/dim]')
-            console.print('[bold green]✓ Uses EXACT SAME logic as Option 3[/bold green]')
-            console.print('[bold green]✓ 100% game compatible - no login stuck[/bold green]')
             target_path = safe_input('[bold #00FFFF]Path: [/bold #00FFFF]').strip()
-            
             if not target_path:
                 console.print('[bold #FF0055]❌ No path provided![/bold #FF0055]')
                 safe_input('\nPress Enter to continue...')
                 continue
-            
-            # Normalize target path
             target_path = target_path.replace('\\', '/').strip('/')
-            if not target_path:
-                console.print('[bold #FF0055]❌ Invalid target path![/bold #FF0055]')
-                safe_input('\nPress Enter to continue...')
-                continue
-            
             try:
-                console.print(f'[bold #00FFFF]🚀 Adding files to {target_path} in {pak_file.name}...[/bold #00FFFF]')
-                console.print('[bold cyan]📋 Using EXACT Option 3 logic[/bold cyan]')
+                console.print(f'[bold #00FFFF]🚀 Adding to {target_path} in {pak_file.name}...[/bold #00FFFF]')
                 pak = TencentPakFile(pak_file)
                 output_pak = result_dir / pak_file.name
-                
                 count = repack_pak_file_full(pak, edit_dir, output_pak, target_path, force_add=True)
-                
                 if count > 0:
-                    console.print()
-                    console.print(f'[bold #00FF88]✅ Successfully processed {count} files to {target_path}![/bold #00FF88]')
-                    console.print(f'[bold #00FF88]📦 Output: {output_pak}[/bold #00FF88]')
-                    console.print()
-                    console.print('[bold green]🎮 PAK is now GAME READY![/bold green]')
-                    console.print('[bold green]✅ No login issues - same as Option 3[/bold green]')
+                    console.print(f'[bold #00FF88]✅ {count} files → {target_path} → {output_pak}[/bold #00FF88]')
                 else:
-                    console.print('[bold #FF0055]❌ No files were processed![/bold #FF0055]')
-                    
+                    console.print('[bold #FF0055]❌ No files processed![/bold #FF0055]')
             except Exception as e:
                 console.print(f'[bold #FF0055]❌ Repack failed:[/bold #FF0055] {e}')
                 import traceback
                 traceback.print_exc()
             safe_input('\nPress Enter to continue...')
-            
-        elif choice == '5':
+
+        elif choice == '9':
             delete_folder(data_path)
             safe_input('\nPress Enter to continue...')
-            
+
         elif choice == '0':
             console.print("[bold magenta]Goodbye![/bold magenta]")
             time.sleep(2)

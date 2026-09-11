@@ -1,0 +1,73 @@
+name: Build APK (Cloud)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Java 17 (Android SDK runner)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/build-tools" >> $GITHUB_PATH
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install rich pycryptodome zstandard requests pytz gmalg
+
+      - name: Python syntax check
+        run: python -m py_compile dravix.py
+
+      - name: Import + ZUC self-test
+        run: |
+          python - <<'EOF'
+          import dravix
+          print('Module import OK')
+          assert dravix._ZUC_CLASS is not None
+          # verify fallback matches gmalg on the fixed test vector
+          import gmalg
+          key = bytes.fromhex('3d4c4be96a82fdaeb58f641db17b455b')
+          iv = bytes.fromhex('84319aa8de6915ca1f6bda6bfbd8c766')
+          fb = dravix._FallbackZUC(key, iv)
+          gm = gmalg.ZUC(key, iv)
+          for i in range(8):
+              assert fb.generate() == gm.generate(), i
+          print('ZUC fallback == gmalg: OK')
+          EOF
+
+      - name: Gradle build (if Android project present)
+        run: |
+          if [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+            ./gradlew assembleDebug --no-daemon
+          else
+            echo "No Android Gradle project detected in this repo — skipping Gradle, tool validated above."
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark-release
+          path: |
+            dravix.py
+            **/*debug.apk
+            **/build/outputs/apk/*/*.apk
+          if-no-files-found: warn
