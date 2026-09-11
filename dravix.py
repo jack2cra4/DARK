@@ -907,12 +907,12 @@ def _repack_uncompressed(outfh, pak_file, entry, pak_relative_path: PurePath, ne
             outfh.write(src.read(target_size - len(plaintext)))
 
 def _best_compress(chunk, cm, zstd_dict=None):
-    """Compress one chunk at the best achievable level."""
+    """Compress one chunk at the best achievable level (fast levels to avoid in-game lag)."""
     if cm == CM_ZLIB:
-        return zlib.compress(chunk, 9)
+        return zlib.compress(chunk, 6)
     if cm in (CM_ZSTD, CM_ZSTD_DICT):
         zd = zstd_dict if cm == CM_ZSTD_DICT else None
-        for lvl in [22, 19, 16, 13, 10, 7, 4, 1]:
+        for lvl in [6, 3]:
             try:
                 return ZstdCompressor(level=lvl, dict_data=zd, threads=1).compress(chunk)
             except Exception:
@@ -1112,7 +1112,7 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
 
             if full_path in edited_paths:
                 p, template = edited[full_path]
-                new_raw = p.read_bytes()
+                new_raw = _harden_asset_for_repack(str(full_path), p.read_bytes())
                 pak_rel = PurePath(full_path)
 
                 ne.content_hash = SHA1.new(new_raw).digest()
@@ -1132,10 +1132,12 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                 ne.index_new_sep = template.index_new_sep if template else old_entry.index_new_sep
 
                 if ne.compression_method == CM_NONE:
-                    cipher = (_encrypt_plaintext(new_raw, pak_rel, ne.encryption_method)
-                              if ne.encrypted else new_raw)
+                    store = bytearray(new_raw)
+                    _align_block(store)
+                    cipher = (_encrypt_plaintext(bytes(store), pak_rel, ne.encryption_method)
+                              if ne.encrypted else bytes(store))
                     ne.offset = len(out_buf)
-                    ne.size = len(new_raw)
+                    ne.size = len(cipher)
                     ne.uncompressed_size = len(new_raw)
                     out_buf += cipher
                 else:
@@ -1148,10 +1150,12 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                         compressed = _best_compress(chunk, ne.compression_method, pak_file._zstd_dict)
                         cipher = (_encrypt_plaintext(compressed, pak_rel, ne.encryption_method)
                                   if ne.encrypted else compressed)
+                        blk_buf = bytearray(cipher)
+                        _align_block(blk_buf)
                         blk = PakCompressedBlock.__new__(PakCompressedBlock)
                         blk.start = len(out_buf)
-                        blk.end = blk.start + len(cipher)
-                        out_buf += cipher
+                        blk.end = blk.start + len(blk_buf)
+                        out_buf += blk_buf
                         new_blks.append(blk)
 
                     ne.compressed_blocks = new_blks
@@ -1195,7 +1199,7 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
             
             if not already_processed:
                 ne = _cp.copy(template)
-                new_raw = p.read_bytes()
+                new_raw = _harden_asset_for_repack(str(fp), p.read_bytes())
                 pak_rel = PurePath(fp)
                 
                 ne.content_hash = SHA1.new(new_raw).digest()
@@ -1213,10 +1217,12 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                 ne.index_new_sep = template.index_new_sep
 
                 if ne.compression_method == CM_NONE:
-                    cipher = (_encrypt_plaintext(new_raw, pak_rel, ne.encryption_method)
-                              if ne.encrypted else new_raw)
+                    store = bytearray(new_raw)
+                    _align_block(store)
+                    cipher = (_encrypt_plaintext(bytes(store), pak_rel, ne.encryption_method)
+                              if ne.encrypted else bytes(store))
                     ne.offset = len(out_buf)
-                    ne.size = len(new_raw)
+                    ne.size = len(cipher)
                     ne.uncompressed_size = len(new_raw)
                     out_buf += cipher
                 else:
@@ -1227,10 +1233,12 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                         compressed = _best_compress(chunk, ne.compression_method, pak_file._zstd_dict)
                         cipher = (_encrypt_plaintext(compressed, pak_rel, ne.encryption_method)
                                   if ne.encrypted else compressed)
+                        blk_buf = bytearray(cipher)
+                        _align_block(blk_buf)
                         blk = PakCompressedBlock.__new__(PakCompressedBlock)
                         blk.start = len(out_buf)
-                        blk.end = blk.start + len(cipher)
-                        out_buf += cipher
+                        blk.end = blk.start + len(blk_buf)
+                        out_buf += blk_buf
                         new_blks.append(blk)
 
                     ne.compressed_blocks = new_blks
@@ -1348,14 +1356,14 @@ def _repack_compressed_with_display(outfh, pak_file, entry, pak_relative_path, n
             zstd_dict = pak_file._zstd_dict if comp_method == CM_ZSTD_DICT else None
             
             if comp_method in (CM_ZSTD, CM_ZSTD_DICT):
-                for level in [22, 19, 16, 13, 10, 7, 4, 1]:
+                for level in [6, 3]:
                     c = ZstdCompressor(level=level, dict_data=zstd_dict, threads=1)
                     new_compressed = c.compress(chunk)
                     if len(new_compressed) <= target_size:
                         compressed_ok = True
                         break
             elif comp_method == CM_ZLIB:
-                new_compressed = zlib.compress(chunk, zlib.Z_BEST_COMPRESSION)
+                new_compressed = zlib.compress(chunk, 6)
                 if len(new_compressed) <= target_size:
                     compressed_ok = True
             
@@ -1923,6 +1931,581 @@ def repack_from_dump(dump_dir: Path, result_root: Path,
     finally:
         shutil.rmtree(result_root / '_repack_tmp', ignore_errors=True)
 
+# ==================== COMPRESSION / ALIGNMENT OPTIMISATION ====================
+
+_ZSTD_FAST_LEVELS = (6, 3)
+_BLOCK_ALIGN_4K = 4096
+
+def _align_block(buf: bytearray) -> None:
+    """Pad buffer to 4096-byte boundary so repacked blocks are 4K-aligned.
+
+    4K-aligned blocks let the engine memory-map asset regions directly without
+    frame drops / stutters (no page-crossing recompression on the device).
+    """
+    pad = (-len(buf)) % _BLOCK_ALIGN_4K
+    if pad:
+        buf += b'\x00' * pad
+
+# ==================== LUA / ASSET ANTI-DUMP PROTECTION ====================
+#
+# Strip debug information (line numbers, local-variable tables, upvalue names)
+# from Lua 5.3 / 5.4 compiled chunks before writing them back into the PAK --
+# the same effect as `luac -s` -- so memory dumpers can't harvest symbols, while
+# the chunk stays 100% engine-compatible (valid TencentPak headers/checksums and
+# a byte-exact header + code + constants + upvalues + nested prototypes).
+
+def _minify_lua_source(data: bytes) -> bytes:
+    """Safely minify plain-text Lua source (strip comments / blank lines).
+
+    Only strips comments and leading whitespace; string & long-string contents
+    are preserved verbatim so semantics never change.
+    """
+    try:
+        src = data.decode('utf-8', errors='surrogateescape')
+    except Exception:
+        return data
+    out = []
+    i, n = 0, len(src)
+    state = 'code'      # code | squote | dquote | longstr | linecom | blockcom
+    depth = 0
+    while i < n:
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < n else ''
+        if state == 'code':
+            if c == '-' and nxt == '-':
+                peep = src[i + 2] if i + 2 < n else ''
+                if peep == '[':
+                    eq = 0
+                    j = i + 3
+                    while j < n and src[j] == '=':
+                        eq += 1
+                        j += 1
+                    if j < n and src[j] == '[':
+                        state = 'blockcom'
+                        depth = eq
+                        i = j + 1
+                        continue
+                state = 'linecom'
+                i += 2
+                continue
+            if c == "'":
+                state = 'squote'
+            elif c == '"':
+                state = 'dquote'
+            elif c == '[':
+                eq = 0
+                j = i + 1
+                while j < n and src[j] == '=':
+                    eq += 1
+                    j += 1
+                if j < n and src[j] == '[':
+                    state = 'longstr'
+                    depth = eq
+                    out.append(c)
+                    out.append('=' * eq)
+                    out.append('[')
+                    i = j + 1
+                    continue
+            out.append(c)
+            i += 1
+        elif state in ('squote', 'dquote'):
+            out.append(c)
+            if c == '\\':
+                if i + 1 < n:
+                    out.append(src[i + 1])
+                    i += 2
+                    continue
+            elif c == state[0]:
+                state = 'code'
+            i += 1
+        elif state == 'longstr':
+            out.append(c)
+            if c == ']':
+                neq = 0
+                j = i + 1
+                while j < n and src[j] == '=':
+                    neq += 1
+                    j += 1
+                if neq == depth and j < n and src[j] == ']':
+                    out.append('=' * depth)
+                    out.append(']')
+                    state = 'code'
+                    i = j + 1
+                    continue
+            i += 1
+        elif state == 'linecom':
+            if c == '\n':
+                state = 'code'
+            i += 1
+        elif state == 'blockcom':
+            if i + 1 < n and c == ']' and src[i + 1] == ']':
+                state = 'code'
+                i += 2
+                continue
+            if i + 1 < n and c == ']' and src[i + 1] == '=':
+                neq = 0
+                j = i + 1
+                while j < n and src[j] == '=':
+                    neq += 1
+                    j += 1
+                if neq == depth and j < n and src[j] == ']':
+                    state = 'code'
+                    i = j + 1
+                    continue
+            i += 1
+    try:
+        return ''.join(out).encode('utf-8')
+    except Exception:
+        return data
+
+
+class _LuaChunk:
+    """Minimal Lua 5.3 / 5.4 chunk reader + stripped re-serialiser (luac -s)."""
+
+    def __init__(self, data: bytes):
+        self._src = data
+        self._ver = None
+        self._header = b''
+        self._endian = '<'
+        self._main = None
+        self._linfo_n = None
+        self._li_size = 8
+        self._num_size = 8
+
+    # ---------- low-level readers ----------
+    def _ra(self, n):
+        p, self._pos = self._pos, self._pos + n
+        blob = self._src[p:p + n]
+        if len(blob) != n:
+            raise ValueError('truncated chunk')
+        return blob
+
+    def _u8(self):
+        return self._ra(1)[0]
+
+    def _i(self):
+        b = self._ra(4)
+        return int.from_bytes(b, 'little' if self._endian == '<' else 'big', signed=True)
+
+    def _ivec(self):
+        x = 0
+        while True:
+            b = self._u8()
+            x = (x << 7) | (b & 0x7f)
+            if b & 0x80:
+                break
+        return x
+
+    def _int64(self):
+        b = self._ra(8)
+        return int.from_bytes(b, 'little' if self._endian == '<' else 'big', signed=True)
+
+    def _num(self):
+        b = self._ra(8)
+        return struct.unpack('<d' if self._endian == '<' else '>d', b)[0]
+
+    # ---------- strings ----------
+    def _gstr(self):
+        if self._ver == 0x54:
+            size = self._ivec()
+        elif self._ver == 0x53:
+            size = self._u8()
+            if size == 0xFF:
+                size = int.from_bytes(self._ra(8), self._endian)
+        else:
+            raise ValueError(f'unsupported lua version 0x{self._ver:02x}')
+        if size == 0:
+            return None
+        return self._ra(size - 1)
+
+    # ---------- constants ----------
+    def _gconstant(self):
+        t = self._u8()
+        if self._ver == 0x54:
+            if t == 0: return ('nil',)
+            if t == 1: return ('bool', False)
+            if t == 0x11: return ('bool', True)
+            if t == 3: return ('num', self._num())
+            if t == 0x13: return ('int', self._int64())
+            if t in (4, 0x14): return ('str', self._gstr())
+            raise ValueError(f'bad constant tag 0x{t:02x}')
+        else:
+            if t == 0: return ('nil',)
+            if t == 1: return ('bool', self._u8() != 0)
+            if t == 3: return ('num', self._num())
+            if t == 0x13: return ('int', int.from_bytes(
+                self._ra(self._li_size), 'little' if self._endian == '<' else 'big', signed=True))
+            if t in (4, 0x14): return ('str', self._gstr())
+            raise ValueError(f'bad constant tag 0x{t:02x}')
+
+    # ---------- function ----------
+    def _gfunc(self):
+        src = self._gstr()
+        if self._ver == 0x54:
+            line_def = self._ivec()
+            line_last = self._ivec()
+        else:
+            line_def = self._i()
+            line_last = self._i()
+        numparams = self._u8()
+        is_vararg = self._u8()
+        maxstack = self._u8()
+        ncode = self._iv_or_i()
+        code = [self._u32le() for _ in range(ncode)]
+        nk = self._iv_or_i()
+        k = [self._gconstant() for _ in range(nk)]
+        nup = self._iv_or_i()
+        if self._ver == 0x54:
+            up = [((self._u8(), self._u8(), self._u8())) for _ in range(nup)]
+        else:
+            up = [((self._u8(), self._u8())) for _ in range(nup)]
+        np = self._iv_or_i()
+        protos = [self._gfunc() for _ in range(np)]
+        # ---- debug (read & discard) ----
+        if self._ver == 0x54:
+            nli = self._ivec(); self._ra(nli)
+            nabs = self._ivec()
+            for _ in range(nabs):
+                self._ivec(); self._ivec()
+        else:
+            nli = self._i(); self._ra(nli * 4)
+        nlv = self._iv_or_i()
+        for _ in range(nlv):
+            self._gstr(); self._iv_or_i(); self._iv_or_i()
+        nuv = self._iv_or_i()
+        if self._ver == 0x54:
+            if nuv != 0:
+                nuv = nup
+            for _ in range(nuv):
+                self._gstr()
+        else:
+            for _ in range(nuv):
+                self._gstr()
+        self._linfo_n = nli
+        return {
+            'source': src, 'linedefined': line_def, 'lastlinedefined': line_last,
+            'numparams': numparams, 'is_vararg': is_vararg, 'maxstacksize': maxstack,
+            'code': code, 'k': k, 'upvalues': up, 'protos': protos,
+        }
+
+    def _iv_or_i(self):
+        return self._ivec() if self._ver == 0x54 else self._i()
+
+    def _u32le(self):
+        return int.from_bytes(self._ra(4), 'little')
+
+    # ---------- top-level ----------
+    def parse(self):
+        d = self._src
+        if d[:4] != b'\x1bLua':
+            raise ValueError('not a lua chunk')
+        self._ver = d[4]
+        if self._ver not in (0x53, 0x54):
+            raise ValueError(f'unsupported lua version 0x{self._ver:02x}')
+        if self._ver == 0x54:
+            self._pos = 12                      # magic4 + ver + fmt + LUAC_DATA(6)
+            self._endian = '<'
+            self._ra(1); self._ra(1); self._ra(1)   # instr/int/number sizes
+            self._ra(8)                          # LUAC_INT (lua_Integer)
+            self._ra(8)                          # LUAC_NUM (double)
+            self._header = d[:self._pos]
+            self._pos = len(self._header)
+            self._ra(1)                          # main nupvalues byte
+        else:                                    # 5.3
+            self._pos = 12
+            self._endian = '<'
+            self._ra(1)                          # sizeof(int)
+            self._ra(1)                          # sizeof(size_t)
+            self._ra(1)                          # sizeof(Instruction)
+            self._li_size = self._u8()           # sizeof(lua_Integer)
+            self._num_size = self._u8()          # sizeof(lua_Number)
+            self._ra(self._li_size)              # LUAC_INT
+            self._ra(self._num_size)             # LUAC_NUM
+            self._header = d[:self._pos]
+            self._pos = len(self._header)
+            self._ra(1)                          # nupvalues byte
+        self._main = self._gfunc()
+        if self._pos != len(d):
+            raise ValueError(f'trailing bytes: {len(d) - self._pos}')
+        return self._main
+
+    # ---------- low-level writers ----------
+    @staticmethod
+    def _w_u8(buf, v):
+        buf.append(v & 0xFF)
+
+    @staticmethod
+    def _w_i(buf, v, endian='<'):
+        bo = 'little' if endian == '<' else 'big'
+        buf += int(v).to_bytes(4, bo, signed=True)
+
+    @staticmethod
+    def _w_ivec(buf, v):
+        if v < 0:
+            raise ValueError('negative varint')
+        groups = []
+        while True:
+            groups.append(v & 0x7F)
+            v >>= 7
+            if not v:
+                break
+        for idx in range(len(groups) - 1, -1, -1):
+            buf.append(groups[idx] | (0x80 if idx == 0 else 0))
+
+    @staticmethod
+    def _w_int64(buf, v, endian='<'):
+        bo = 'little' if endian == '<' else 'big'
+        buf += int(v).to_bytes(8, bo, signed=True)
+
+    @staticmethod
+    def _w_num(buf, v, endian='<'):
+        buf += struct.pack('<d' if endian == '<' else '>d', float(v))
+
+    def _wstr(self, buf, s):
+        if self._ver == 0x54:
+            self._w_ivec(buf, 0 if s is None else len(s) + 1)
+        else:
+            if s is None:
+                self._w_u8(buf, 0)
+            else:
+                size = len(s) + 1
+                if size < 0xFF:
+                    self._w_u8(buf, size)
+                else:
+                    self._w_u8(buf, 0xFF)
+                    buf += size.to_bytes(8, self._endian)
+        if s:
+            buf += s
+
+    def _wconst(self, buf, c):
+        tag = c[0]
+        if self._ver == 0x54:
+            if tag == 'nil':
+                self._w_u8(buf, 0)
+            elif tag == 'bool':
+                self._w_u8(buf, 0x11 if c[1] else 1)
+            elif tag == 'num':
+                self._w_u8(buf, 3); self._w_num(buf, c[1])
+            elif tag == 'int':
+                self._w_u8(buf, 0x13); self._w_int64(buf, c[1])
+            elif tag == 'str':
+                self._w_u8(buf, 4); self._wstr(buf, c[1])
+        else:
+            if tag == 'nil':
+                self._w_u8(buf, 0)
+            elif tag == 'bool':
+                self._w_u8(buf, 1); self._w_u8(buf, 1 if c[1] else 0)
+            elif tag == 'num':
+                self._w_u8(buf, 3); self._w_num(buf, c[1])
+            elif tag == 'int':
+                self._w_u8(buf, 0x13)
+                buf += int(c[1]).to_bytes(self._li_size, 'little' if self._endian == '<' else 'big', signed=True)
+            elif tag == 'str':
+                self._w_u8(buf, 4); self._wstr(buf, c[1])
+        return buf
+
+    def _wfunc(self, buf, f):
+        self._wstr(buf, f['source'])
+        if self._ver == 0x54:
+            self._w_ivec(buf, f['linedefined'])
+            self._w_ivec(buf, f['lastlinedefined'])
+        else:
+            self._w_i(buf, f['linedefined'])
+            self._w_i(buf, f['lastlinedefined'])
+        self._w_u8(buf, f['numparams'])
+        self._w_u8(buf, f['is_vararg'])
+        self._w_u8(buf, f['maxstacksize'])
+        self._wrap_count(buf, len(f['code']))
+        for ins in f['code']:
+            buf += ins.to_bytes(4, 'little')
+        self._wrap_count(buf, len(f['k']))
+        for c in f['k']:
+            self._wconst(buf, c)
+        self._wrap_count(buf, len(f['upvalues']))
+        for u in f['upvalues']:
+            for b in u:
+                self._w_u8(buf, b)
+        self._wrap_count(buf, len(f['protos']))
+        for p in f['protos']:
+            self._wfunc(buf, p)
+        # ---- debug section stripped (zero counts) ----
+        if self._ver == 0x54:
+            self._w_ivec(buf, 0)   # lineinfo
+            self._w_ivec(buf, 0)   # abslineinfo
+        else:
+            self._w_i(buf, 0)      # lineinfo
+        self._wrap_count(buf, 0)   # locvars
+        self._wrap_count(buf, 0)   # upvalue names
+
+    def _wrap_count(self, buf, v):
+        if self._ver == 0x54:
+            self._w_ivec(buf, v)
+        else:
+            self._w_i(buf, v)
+
+    def rebuild(self):
+        buf = bytearray(self._header)
+        nup = len(self._main['upvalues'])
+        if self._ver == 0x54:
+            self._w_ivec(buf, nup)
+        else:
+            self._w_u8(buf, nup)
+        self._wfunc(buf, self._main)
+        return bytes(buf)
+
+
+def _tree_sig(p):
+    return (
+        p['numparams'], p['is_vararg'], p['maxstacksize'], tuple(p['code']),
+        tuple(p['k']), tuple(tuple(x) for x in p['upvalues']),
+        tuple(_tree_sig(x) for x in p['protos']),
+    )
+
+
+def _strip_lua_debug(data: bytes):
+    """Return a debug-stripped Lua 5.3/5.4 chunk, or None if it can't be
+    safely stripped (unrecognised version / parse failure / round-trip mismatch).
+    """
+    if data[:4] != b'\x1bLua':
+        return None
+    try:
+        c1 = _LuaChunk(data)
+        c1.parse()
+    except Exception:
+        return None
+    if c1._ver not in (0x53, 0x54):
+        return None
+    sig1 = _tree_sig(c1._main)
+    out = c1.rebuild()
+    if out == data or len(out) >= len(data):
+        return None
+    try:
+        c2 = _LuaChunk(out)
+        c2.parse()
+    except Exception:
+        return None
+    if _tree_sig(c2._main) != sig1:
+        return None
+    return out
+
+
+def _harden_asset_for_repack(rel_name, data: bytes) -> bytes:
+    """Apply anti-dump hardening to Lua assets before repack.
+
+    Compiled Lua chunks -> luac -s style debug strip (safe, engine-compatible).
+    Plain-text Lua     -> comment/whitespace stripping.
+    Everything else untouched.
+    """
+    low = (rel_name or '').lower()
+    if data[:4] == b'\x1bLua':
+        stripped = _strip_lua_debug(data)
+        return stripped if stripped is not None else data
+    is_lua_source = data[:4] not in (b'\x1bLua', b'\x1bLJ') and (
+        low.endswith('.lua') or low.endswith('.luac') or low.endswith('.luac.bytes')
+    )
+    if is_lua_source:
+        try:
+            minified = _minify_lua_source(data)
+            return minified if len(minified) < len(data) else data
+        except Exception:
+            return data
+    return data
+
+
+def generate_hardened_so(base_dir):
+    """Generate a script-hardening kit: dravix.py -> Cython C-extension -> stripped .so
+    -> AES-256 encrypted artifact (anti-decompile).
+
+    Builds locally when cython + a compiler are available; otherwise hands off to
+    the cloud workflow (.github/workflows/harden.yml) so devices with no toolchain
+    can still produce the hardened build.
+    """
+    import subprocess as _sp
+    hdir = base_dir / 'HARDEN'
+    hdir.mkdir(parents=True, exist_ok=True)
+    (hdir / 'setup_dravix.py').write_text(
+        'from setuptools import setup, Extension\n'
+        'from Cython.Build import cythonize\n'
+        'setup(\n'
+        '    ext_modules=cythonize(\n'
+        '        "dravix_hardening.py",\n'
+        "        compiler_directives={'language_level': 3},\n"
+        '        nthreads=2, quiet=True,\n'
+        '    ),\n'
+        "    script_args=['build_ext', '--inplace'],\n"
+        ')\n',
+        encoding='utf-8')
+    script_path = hdir / 'build_hardened.sh'
+    script_path.write_text(
+        '''#!/usr/bin/env bash
+# ============================================================
+#  PAK TOOL - SCRIPT HARDENING GENERATOR  (@TrnDravix)
+#  dravix.py -> Cython .so -> stripped -> AES-256 encrypted
+#  Launch the hardened build with:
+#    python -c "import dravix_hardening as __tool; __tool.main_menu()"
+# ============================================================
+set -e
+cd "$(dirname "$0")"
+cp -f ../dravix.py ./dravix_hardening.py
+python -m pip install --quiet --upgrade pip setuptools wheel cython
+python -m pip install --quiet rich pycryptodome zstandard requests pytz gmalg
+python setup_dravix.py build_ext --inplace
+SO=$(ls dravix_hardening*.so 2>/dev/null | head -n1)
+if [ -z "$SO" ]; then echo "ERROR: no .so produced"; exit 1; fi
+strip --strip-unneeded "$SO" 2>/dev/null || true
+python -c "import dravix_hardening; print('HARDENED MODULE OK')"
+KEY=$(python - <<'PY'
+import secrets, base64
+print(base64.b64encode(secrets.token_bytes(32)).decode())
+PY
+)
+python - "$SO" "$KEY" <<'PY'
+import sys
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+so, key = sys.argv[1], sys.argv[2]
+data = open(so, 'rb').read()
+derived = PBKDF2(key.encode(), b'TrnDravixPAKTool', 32, count=10000)
+cipher = AES.new(derived, AES.MODE_EAX)
+ct, tag = cipher.encrypt_and_digest(data)
+with open('dravix_hardened.so.enc', 'wb') as f:
+    f.write(cipher.nonce + tag + ct)
+print('AES-256-EAX encrypted -> dravix_hardened.so.enc')
+PY
+printf '%s\\n' "$KEY" > dravix_hardened.key
+echo "HARDENED BUILD COMPLETE - KEY: $KEY"
+ls -la dravix_hardening*.so dravix_hardened.so.enc dravix_hardened.key
+''',
+        encoding='utf-8')
+    script_path.chmod(0o755)
+    console.print(f'[bold #00FF88]✅ Hardening kit created in HARDEN/[/bold #00FF88]')
+    console.print('[dim](build_hardened.sh + setup_dravix.py → dravix_hardened.so.enc)[/dim]')
+    try:
+        import importlib as _implib
+        has_cython = _implib.util.find_spec('cython') is not None
+    except Exception:
+        has_cython = False
+    if has_cython:
+        console.print('[bold cyan]⚙ Cython detected — attempting local build...[/bold cyan]')
+        try:
+            r = _sp.run(['bash', str(script_path)], cwd=str(hdir),
+                        capture_output=True, text=True, timeout=900)
+        except Exception as e:
+            console.print(f'[bold #FF0055]❌ Local build error: {escape(str(e))}[/bold #FF0055]')
+            return
+        if r.returncode == 0:
+            console.print('[bold #00FF88]✅ Hardened .so built locally (see HARDEN/).[/bold #00FF88]')
+            for line in r.stdout.splitlines():
+                console.print('[dim]' + (escape(line) if len(line) < 130 else escape(line[:127]) + '...') + '[/dim]')
+        else:
+            console.print('[bold #FF0055]❌ Local build failed — use the cloud workflow instead.[/bold #FF0055]')
+            for line in r.stderr.splitlines()[-20:]:
+                console.print(f'[dim #FF8888]{escape(line)}[/dim #FF8888]')
+    else:
+        console.print('[bold #FFFF00]⚠ Cython not installed — push repo & run the "harden" workflow.[/bold #FFFF00]')
+        console.print('[dim]Actions tab → "Script Hardening" → Run workflow → download hardened-dravix artifact.[/dim]')
+
+
 def main_menu():
     if getattr(sys, 'frozen', False):
         data_path = Path(sys.executable).parent
@@ -1949,6 +2532,7 @@ def main_menu():
         console.print("[bold cyan]║[/bold cyan] [bold white] 7. REPACK ANY SIZE[/bold white] [dim](PAK TOOL/)[/dim]     [bold cyan]║[/bold cyan]")
         console.print("[bold cyan]║[/bold cyan] [bold white] 8. REPACK TO PATH[/bold white] [dim](PAK TOOL/)[/dim]     [bold cyan]║[/bold cyan]")
         console.print("[bold cyan]║[/bold cyan] [bold white] 9. DELETE FOLDER[/bold white]                 [bold cyan]║[/bold cyan]")
+        console.print("[bold cyan]║[/bold cyan] [bold white] H. HARDEN SCRIPT[/bold white] [dim](→ .so)[/dim]         [bold cyan]║[/bold cyan]")
         console.print("[bold cyan]║[/bold cyan] [bold white] 0. EXIT[/bold white]                         [bold cyan]║[/bold cyan]")
         console.print("[bold cyan]╚══════════════════════════════════════╝[/bold cyan]")
         console.print()
@@ -2206,6 +2790,10 @@ def main_menu():
 
         elif choice == '9':
             delete_folder(data_path)
+            safe_input('\nPress Enter to continue...')
+
+        elif choice.lower() == 'h':
+            generate_hardened_so(data_path)
             safe_input('\nPress Enter to continue...')
 
         elif choice == '0':
