@@ -912,7 +912,7 @@ def _best_compress(chunk, cm, zstd_dict=None):
         return zlib.compress(chunk, 6)
     if cm in (CM_ZSTD, CM_ZSTD_DICT):
         zd = zstd_dict if cm == CM_ZSTD_DICT else None
-        for lvl in [6, 3]:
+        for lvl in _ZSTD_FAST_LEVELS:
             try:
                 return ZstdCompressor(level=lvl, dict_data=zd, threads=1).compress(chunk)
             except Exception:
@@ -1133,7 +1133,6 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
 
                 if ne.compression_method == CM_NONE:
                     store = bytearray(new_raw)
-                    _align_block(store)
                     cipher = (_encrypt_plaintext(bytes(store), pak_rel, ne.encryption_method)
                               if ne.encrypted else bytes(store))
                     ne.offset = len(out_buf)
@@ -1151,7 +1150,6 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                         cipher = (_encrypt_plaintext(compressed, pak_rel, ne.encryption_method)
                                   if ne.encrypted else compressed)
                         blk_buf = bytearray(cipher)
-                        _align_block(blk_buf)
                         blk = PakCompressedBlock.__new__(PakCompressedBlock)
                         blk.start = len(out_buf)
                         blk.end = blk.start + len(blk_buf)
@@ -1218,7 +1216,6 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
 
                 if ne.compression_method == CM_NONE:
                     store = bytearray(new_raw)
-                    _align_block(store)
                     cipher = (_encrypt_plaintext(bytes(store), pak_rel, ne.encryption_method)
                               if ne.encrypted else bytes(store))
                     ne.offset = len(out_buf)
@@ -1234,7 +1231,6 @@ def repack_pak_file_full(pak_file, edited_root, output_path, target_path=None, f
                         cipher = (_encrypt_plaintext(compressed, pak_rel, ne.encryption_method)
                                   if ne.encrypted else compressed)
                         blk_buf = bytearray(cipher)
-                        _align_block(blk_buf)
                         blk = PakCompressedBlock.__new__(PakCompressedBlock)
                         blk.start = len(out_buf)
                         blk.end = blk.start + len(blk_buf)
@@ -1356,7 +1352,7 @@ def _repack_compressed_with_display(outfh, pak_file, entry, pak_relative_path, n
             zstd_dict = pak_file._zstd_dict if comp_method == CM_ZSTD_DICT else None
             
             if comp_method in (CM_ZSTD, CM_ZSTD_DICT):
-                for level in [6, 3]:
+                for level in _ZSTD_FAST_LEVELS:
                     c = ZstdCompressor(level=level, dict_data=zstd_dict, threads=1)
                     new_compressed = c.compress(chunk)
                     if len(new_compressed) <= target_size:
@@ -1404,14 +1400,14 @@ def _repack_compressed_with_display(outfh, pak_file, entry, pak_relative_path, n
         zstd_dict = pak_file._zstd_dict if comp_method == CM_ZSTD_DICT else None
         
         if comp_method in (CM_ZSTD, CM_ZSTD_DICT):
-            for level in [22, 19, 16, 13, 10, 7, 4, 1]:
+            for level in _ZSTD_FAST_LEVELS:
                 c = ZstdCompressor(level=level, dict_data=zstd_dict, threads=1)
                 new_compressed = c.compress(new_data)
                 if len(new_compressed) <= target_size:
                     compressed_ok = True
                     break
         elif comp_method == CM_ZLIB:
-            new_compressed = zlib.compress(new_data, zlib.Z_BEST_COMPRESSION)
+            new_compressed = zlib.compress(new_data, 6)
             if len(new_compressed) <= target_size:
                 compressed_ok = True
         
@@ -1846,10 +1842,16 @@ def _apply_protection_zip(built_zip: Path) -> None:
     except Exception:
         return
     try:
-        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_STORED) as zout:
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
             for zi, data in entries:
-                zout.writestr(zi, data)
-            zout.writestr('.dravix_guard', _GUARD_BANNER)
+                nz = zipfile.ZipInfo(zi.filename)
+                nz.compress_type = zi.compress_type
+                nz.extra = _zip_align_extra(zout.fp.tell(), zi.filename)
+                zout.writestr(nz, data)
+            g = zipfile.ZipInfo('.dravix_guard')
+            g.compress_type = zipfile.ZIP_STORED
+            g.extra = _zip_align_extra(zout.fp.tell(), '.dravix_guard')
+            zout.writestr(g, _GUARD_BANNER)
         shutil.move(str(tmp_path), str(built_zip))
     except Exception:
         try:
@@ -1867,16 +1869,44 @@ def _apply_protection(out_path: Path) -> None:
         except Exception:
             pass
 
+def _zip_align_extra(cur_pos: int, arcname: str, align: int = _OBB_ALIGN) -> bytes:
+    """Local-header padding so a zip entry's data begins on a 4K page:
+
+    Android/zipalign-compatible: the local file header is written with an
+    enlarged Extra Field (zerofilled) so the file DATA starts at a 4096-byte
+    boundary inside the container. Page-aligned data lets the OS memory-map
+    asset regions directly (no stutter for audio/texture/blob files).
+    """
+    name_b = arcname.encode('utf-8')
+    pad = (-(cur_pos + 30 + len(name_b))) % align
+    return b'\x00' * pad
+
+def _repack_obb_aligned(unpack_dir: Path, out: Path) -> bool:
+    """Build a .obb as a DEFLATED (level 6) zip with every file's data
+    4096-aligned. Original ZIP_STORED behaviour ballooned the container;
+    DEFLATED keeps huge audio/texture assets small while page alignment keeps
+    loads instant on Android."""
+    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
+        for root, _, files in os.walk(unpack_dir):
+            for fn in files:
+                full = Path(root) / fn
+                rel = full.relative_to(unpack_dir)
+                zinfo = zipfile.ZipInfo(rel.as_posix())
+                zinfo.compress_type = zipfile.ZIP_DEFLATED
+                zinfo.extra = _zip_align_extra(zout.fp.tell(), rel.as_posix())
+                with open(full, 'rb') as f:
+                    with zout.open(zinfo, 'w') as dst:
+                        shutil.copyfileobj(f, dst)
+        g = zipfile.ZipInfo('.dravix_guard')
+        g.compress_type = zipfile.ZIP_STORED
+        g.extra = _zip_align_extra(zout.fp.tell(), '.dravix_guard')
+        zout.writestr(g, _GUARD_BANNER)
+    return True
+
 def repack_obb(unpack_dir: Path, out_root: Path) -> Optional[Path]:
     out = out_root / (unpack_dir.name + '.obb')
     try:
-        with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zout:
-            for root, _, files in os.walk(unpack_dir):
-                for fn in files:
-                    full = Path(root) / fn
-                    rel = full.relative_to(unpack_dir)
-                    zout.write(str(full), rel.as_posix())
-        _apply_protection_zip(out)
+        _repack_obb_aligned(unpack_dir, out)
         return out
     except Exception:
         return None
@@ -1918,13 +1948,21 @@ def repack_from_dump(dump_dir: Path, result_root: Path,
             return True, str(out)
         elif fmt in ('ZIP_CONTAINER', 'RAW_BINARY'):
             out = result_root / (dump_dir.name + '.zip')
-            with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as zout:
+            with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zout:
                 for root, _, files in os.walk(clean):
                     for fn in files:
                         full = Path(root) / fn
                         rel = full.relative_to(clean)
-                        zout.write(str(full), rel.as_posix())
-            _apply_protection_zip(out)
+                        zinfo = zipfile.ZipInfo(rel.as_posix())
+                        zinfo.compress_type = zipfile.ZIP_DEFLATED
+                        zinfo.extra = _zip_align_extra(zout.fp.tell(), rel.as_posix())
+                        with open(full, 'rb') as f:
+                            with zout.open(zinfo, 'w') as dst:
+                                shutil.copyfileobj(f, dst)
+                g = zipfile.ZipInfo('.dravix_guard')
+                g.compress_type = zipfile.ZIP_STORED
+                g.extra = _zip_align_extra(zout.fp.tell(), '.dravix_guard')
+                zout.writestr(g, _GUARD_BANNER)
             return True, str(out)
         else:
             return False, f'Unknown dump format "{fmt}" — cannot determine repack strategy.'
@@ -1934,17 +1972,6 @@ def repack_from_dump(dump_dir: Path, result_root: Path,
 # ==================== COMPRESSION / ALIGNMENT OPTIMISATION ====================
 
 _ZSTD_FAST_LEVELS = (6, 3)
-_BLOCK_ALIGN_4K = 4096
-
-def _align_block(buf: bytearray) -> None:
-    """Pad buffer to 4096-byte boundary so repacked blocks are 4K-aligned.
-
-    4K-aligned blocks let the engine memory-map asset regions directly without
-    frame drops / stutters (no page-crossing recompression on the device).
-    """
-    pad = (-len(buf)) % _BLOCK_ALIGN_4K
-    if pad:
-        buf += b'\x00' * pad
 
 # ==================== LUA / ASSET ANTI-DUMP PROTECTION ====================
 #
