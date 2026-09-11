@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'dravix.py'
+      - 'dark-release_dravix.py'
 
 permissions:
   contents: read
@@ -27,7 +28,9 @@ jobs:
           python -m pip install rich pycryptodome zstandard requests pytz gmalg
 
       - name: Spec-check the source first
-        run: python -m py_compile dravix.py
+        run: |
+          cp dark-release_dravix.py dravix.py
+          python -m py_compile dravix.py
 
       - name: Compile dravix.py -> C extension (.so)
         run: |

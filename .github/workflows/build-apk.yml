@@ -35,7 +35,9 @@ jobs:
           pip install rich pycryptodome zstandard requests pytz gmalg
 
       - name: Python syntax check
-        run: python -m py_compile dravix.py
+        run: |
+          cp dark-release_dravix.py dravix.py
+          python -m py_compile dravix.py
 
       - name: Import + ZUC self-test
         run: |

@@ -1740,6 +1740,31 @@ def _extract_strings(data: bytes, min_len=4):
         out.append(''.join(buf))
     return out
 
+def _extract_string_runs(data: bytes, min_len=4, eh_size=0):
+    runs = []
+    i, n = 0, len(data)
+    while i < n:
+        if 32 <= data[i] < 127:
+            j = i
+            while j < n and 32 <= data[j] < 127:
+                j += 1
+            if j - i >= min_len:
+                term = j < n and data[j] == 0
+                slot = j - i + 1 if term else j - i
+                runs.append({
+                    's': data[i:j].decode('ascii', errors='replace'),
+                    'offsets': [{
+                        'o': i,
+                        'len': slot,
+                        'nul': term,
+                        'hdr': i < eh_size,
+                    }],
+                })
+            i = j
+        else:
+            i += 1
+    return runs
+
 def _dump_strings_to_file(data: bytes, dest: Path, name='strings.txt'):
     strs = _extract_strings(data)
     if strs:
@@ -1753,14 +1778,32 @@ def _dump_elf(data: bytes, dest: Path) -> bool:
     endian = 'little' if data[5] == 1 else 'big'
     bits = 64 if ei_class == 2 else 32
     hdr_len = 64 if ei_class == 2 else 52
+    e_type = e_machine = 0
+    eh_size = 0
     if len(data) >= hdr_len:
         e_type = int.from_bytes(data[16:18], endian)
         e_machine = int.from_bytes(data[18:20], endian)
-    else:
-        e_type = e_machine = 0
+        eh_size = int.from_bytes(data[40:44] if ei_class == 2 else data[52:56], endian)
+        if not 20 <= eh_size <= hdr_len:
+            eh_size = hdr_len
     (dest / 'elf_info.txt').write_text(
         f'class=ELF{bits}\nendian={endian}\ntype=0x{e_type:04x}\nmachine=0x{e_machine:04x}',
         encoding='utf-8')
+    (dest / 'original_binary.bin').write_bytes(data)
+    runs = _extract_string_runs(data, eh_size=eh_size)
+    smap = {
+        'version': 1,
+        'source': dest.name,
+        'class': f'ELF{bits}',
+        'endian': endian,
+        'eh_size': eh_size,
+        'count': len(runs),
+        'strings': runs,
+    }
+    (dest / 'strings_map.json').write_text(
+        json.dumps(smap, indent=2, ensure_ascii=False), encoding='utf-8')
+    (dest / 'strings.txt').write_text(
+        '\n'.join(r['s'] for r in runs), encoding='utf-8')
     return True
 
 def _dump_lua_chunk(data: bytes, dest: Path) -> bool:
@@ -1843,7 +1886,6 @@ def dump_universal(source: Path, dump_root: Path) -> Tuple[Path, str]:
         data = open(source, 'rb').read()
         handled = _dump_elf(data, dest)
         if handled:
-            _dump_strings_to_file(data, dest, 'strings.txt')
             fmt = 'ELF'
     if not handled and fmt == 'LUA':
         data = open(source, 'rb').read()
@@ -1963,12 +2005,90 @@ def _clean_for_repack(dump_dir: Path, clean_root: Path) -> Path:
                 item.unlink()
     return clean
 
+def _repack_elf_dump(clean: Path, out: Path) -> Tuple[bool, str]:
+    orig = clean / 'original_binary.bin'
+    smap_path = clean / 'strings_map.json'
+    strs_path = clean / 'strings.txt'
+    if not orig.exists():
+        return False, 'Original ELF binary missing — re-dump the file.'
+    if not smap_path.exists():
+        return False, 'strings_map.json missing — cannot cross-reference strings.'
+    if not strs_path.exists():
+        return False, 'strings.txt missing from dump.'
+    try:
+        smap = json.loads(smap_path.read_text(encoding='utf-8'))
+        entries = smap.get('strings', [])
+    except Exception:
+        return False, 'strings_map.json is corrupted.'
+    try:
+        lines = strs_path.read_text(encoding='utf-8').splitlines()
+    except Exception:
+        return False, 'strings.txt is not readable text.'
+    blob = bytearray(orig.read_bytes())
+    orig_size = len(blob)
+    used = [False] * len(entries)
+    patched = skipped = 0
+    warnings = []
+    for i, line in enumerate(lines):
+        if i < len(entries) and not used[i]:
+            idx = i
+        else:
+            idx = -1
+            for j in range(len(entries)):
+                if not used[j]:
+                    idx = j
+                    break
+            if idx == -1:
+                skipped += 1
+                warnings.append(f'new string has no original slot: {line!r}')
+                continue
+        entry = entries[idx]
+        used[idx] = True
+        if line == entry.get('s', ''):
+            continue
+        new_b = line.encode('utf-8', errors='replace')
+        fits = True
+        for occ in entry.get('offsets', []):
+            slot = occ.get('len', 0)
+            max_len = max(slot - 1, 0) if occ.get('nul') else slot
+            if slot <= 0 or len(new_b) > max_len:
+                fits = False
+                break
+        if not fits:
+            skipped += 1
+            warnings.append(
+                f'new string too long for slot of {entry.get("s", "")!r}: {line!r}')
+            continue
+        for occ in entry.get('offsets', []):
+            o = occ.get('o')
+            slot = occ.get('len', 0)
+            if occ.get('hdr') or o is None or slot <= 0:
+                continue
+            if o + slot > orig_size:
+                continue
+            blob[o:o + slot] = new_b + b'\x00' * (slot - len(new_b))
+        patched += 1
+    patched_blob = bytes(blob)
+    if len(patched_blob) != orig_size or patched_blob[:4] != b'\x7fELF':
+        return False, 'Patched ELF invalid (size/magic mismatch) — aborting.'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(patched_blob)
+    try:
+        os.chmod(out, 0o755)
+    except Exception:
+        pass
+    for w in warnings:
+        console.print(f'[bold #FFAA00]⚠ ELF patch skipped: {escape(w)}[/bold #FFAA00]')
+    console.print(f'[green]✓ Patched {patched} string slot(s) → {out}[/green]')
+    return True, str(out)
+
 def repack_from_dump(dump_dir: Path, result_root: Path,
                      original_search_dirs: List[Path]) -> Tuple[bool, str]:
     if _is_protected_file(dump_dir):
         return False, 'Dump is protected by anti-dump marker — cannot repack.'
     info_path = dump_dir / 'dump_info.json'
     fmt = 'UNKNOWN'
+    info = {}
     if info_path.exists():
         info = json.loads(info_path.read_text(encoding='utf-8'))
         fmt = info.get('format', 'UNKNOWN').upper()
@@ -2005,6 +2125,12 @@ def repack_from_dump(dump_dir: Path, result_root: Path,
                 g.extra = _zip_align_extra(zout.fp.tell(), '.dravix_guard')
                 zout.writestr(g, _GUARD_BANNER)
             return True, str(out)
+        elif fmt == 'ELF':
+            out = result_root / (info.get('source') or dump_dir.name)
+            ok_exec, msg = _repack_elf_dump(clean, out)
+            if not ok_exec:
+                return False, msg
+            return True, msg
         else:
             return False, f'Unknown dump format "{fmt}" — cannot determine repack strategy.'
     finally:
