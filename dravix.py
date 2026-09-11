@@ -1,9 +1,10 @@
-#THIS TOOL MOD BY - @TrnDravix
-#TELEGRAM SEARCH - @TrnDravix
-#TELEGRAM CHANNEL - TrnDravix BGMI
-#OWNER / MODER -TrnDravix TrnDravix
-
-#One_Of_The_Best_Tool_In_Whole_Telegram - 100% WORKING FINAL
+# ============================================================
+#   FRIEND BGMI TOOL  —  FRIEND TACTICAL ENGINE
+#   OWNER / AUTHOR : FRIEND
+#   TELEGRAM       : @Friends6gg
+#   STANDARDIZED BRANDING — BGMI / PUBG TACTICAL UI
+# ============================================================
+# One_Of_The_Best_Tool_In_Whole_Telegram - 100% WORKING FINAL
 
 import itertools as it
 import math
@@ -128,7 +129,17 @@ from Crypto.Hash import SHA1
 from Crypto.Util.Padding import unpad
 from zstandard import ZstdDecompressor, ZstdCompressionDict, DICT_TYPE_AUTO, ZstdCompressor
 
-console = Console()
+console = Console(width=64, safe_box=False)
+
+# ==================== GLOBAL BRANDING ====================
+TOOL_NAME   = "FRIEND BGMI TOOL"
+OWNER_AUTH  = "FRIEND"
+TG_HANDLE   = "@Friends6gg"
+TAGLINE     = "FRIEND TACTICAL ENGINE"
+SKY_BLUE    = "#00E5FF"     # primary tactical accent (deep sky blue / cyan)
+ACCENT_GOLD = "#FFD700"     # loadout / emote accent (BGMI gold)
+ACCENT_RED  = "#FF3B30"     # danger / exit accent
+ACCENT_GRN  = "#00FF88"     # success / confirmed-action green
 
 # ==================== SIMPLE BLOCK DISPLAY CLASS ====================
 
@@ -1560,12 +1571,42 @@ def clear_screen():
 
 def print_banner():
     clear_screen()
-    console.print("[bold cyan]========================================[/bold cyan]")
-    console.print("[bold yellow]    PAK TOOL - UNPACK & REPACK[/bold yellow]")
-    console.print("[bold cyan]========================================[/bold cyan]")
+    # BGMI / PUBG tactical banner — Level-3 Helmet, M416 + AWM loadout silhouettes
+    art = [
+        "              ▄▄▄▄▄▄▄▄▄",
+        "          ▄█████████████████▄",
+        "        ▄████▀▀▀▀██▀▀▀▀███████▄",
+        "       █████████████████████████",
+        "       ██▀▀████████████████████▌",
+        "       ████████████████████████▀",
+        "        ▀█████▀▀▀▀▀▀▀▀▀▀█████▀",
+        "           ▀▀         ▀▀",
+        "  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄",
+        "  ████████████████████████████████████████████████████",
+        "  █████████████████ FRIEND BGMI TOOL █████████████████",
+        "  ████████████████████████████████████████████████████",
+        "  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+        "  ▄█████████████▄    ▄███████████▄    ▄█████████████",
+        "  ▐██████████████▌  ▐█████████████▌  ▐██████████████▌",
+        "  ▐██████████████▌  ▐█████████████▌  ▐██████████████▌",
+        "   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀    ▀▀▀▀▀▀▀▀▀▀▀▀    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+        "            ──── M416 ──────── AWM ────",
+    ]
+    header = Panel(
+        "\n".join(art),
+        title=f"[bold {SKY_BLUE}]🔹 {TOOL_NAME} 🔹[/bold {SKY_BLUE}]",
+        title_align="center",
+        subtitle=f"[bold {ACCENT_GOLD}]{TAGLINE}[/bold {ACCENT_GOLD}]",
+        subtitle_align="center",
+        border_style=SKY_BLUE,
+        box=DOUBLE_EDGE,
+        expand=False,
+        padding=(1, 1),
+    )
+    console.print(header)
     console.print()
-    console.print("[bold yellow]TG - @TrnDravix[/bold yellow]")
-    console.print("[bold green]🔰 JAI SHREE SHYAM 🔰[/bold green]")
+    console.print(Align.center(f"[bold {SKY_BLUE}]OWNER / AUTHOR :[/bold {SKY_BLUE}] [bold white]{OWNER_AUTH}[/bold white]    [bold {SKY_BLUE}]TELEGRAM :[/bold {SKY_BLUE}] [bold white]{TG_HANDLE}[/bold white]"))
+    console.print(Align.center(f"[bold {SKY_BLUE}]══════════════════════════════════════════════════[/bold {SKY_BLUE}]"))
     console.print()
 
 def get_indian_time():
@@ -1662,7 +1703,7 @@ def display_file_selector(title, folder_path, file_pattern="*.pak"):
 
 _DUMP_SKIP_NAMES = {'dump_info.json', '.dravix_guard'}
 _OBB_ALIGN = 4096
-_GUARD_BANNER = b'\n[PAK TOOL] Protected by @TrnDravix\n'
+_GUARD_BANNER = b'\n[FRIEND BGMI TOOL] Protected by FRIEND (@Friends6gg) - FRIEND TACTICAL ENGINE\n'
 
 def _write_dump_info(dest: Path, source: Path):
     info = {
@@ -2466,7 +2507,7 @@ def generate_hardened_so(base_dir):
     script_path.write_text(
         '''#!/usr/bin/env bash
 # ============================================================
-#  PAK TOOL - SCRIPT HARDENING GENERATOR  (@TrnDravix)
+#  FRIEND BGMI TOOL - SCRIPT HARDENING GENERATOR  (@Friends6gg)
 #  dravix.py -> Cython .so -> stripped -> AES-256 encrypted
 #  Launch the hardened build with:
 #    python -c "import dravix_hardening as __tool; __tool.main_menu()"
@@ -2492,7 +2533,7 @@ from Crypto.Cipher import AES
 from Crypto.Protocol.KDF import PBKDF2
 so, key = sys.argv[1], sys.argv[2]
 data = open(so, 'rb').read()
-derived = PBKDF2(key.encode(), b'TrnDravixPAKTool', 32, count=10000)
+derived = PBKDF2(key.encode(), b'FRIENDBGMITool2026', 32, count=10000)
 cipher = AES.new(derived, AES.MODE_EAX)
 ct, tag = cipher.encrypt_and_digest(data)
 with open('dravix_hardened.so.enc', 'wb') as f:
@@ -2533,6 +2574,54 @@ ls -la dravix_hardening*.so dravix_hardened.so.enc dravix_hardened.key
         console.print('[dim]Actions tab → "Script Hardening" → Run workflow → download hardened-dravix artifact.[/dim]')
 
 
+def _build_loadout_menu():
+    """PUBG Lobby / Inventory-style tactical menu in a sky-blue HEAVY border panel.
+
+    Uses rich.Text (not markup) so the bracket numbers and CJK gun glyphs render
+    verbatim with no parsing errors, and the whole panel is width-locked to the
+    console's 64-column safe area — zero layout jumping / flicker.
+    """
+    from rich.cells import cell_len
+    slots = [
+        ("1",  "︻╦╤─ 💥",    "UNIVERSAL DUMP",     "Drop In: INPUT/"),
+        ("2",  "︻デ═一 📦",  "REPACK FROM DUMP",   "Rebuild to RESULT/"),
+        ("3",  "︻╦̵̵͇̿̿̿̿══ 🛡", "OBB UNPACK",          "Extract Asset Packs"),
+        ("4",  "▄︻̷̿┻̿═━一 ⚡", "OBB REPACK",          "Align & Seal 4KB"),
+        ("5",  "🔫 🎯",       "UNPACK PAK",         "Tencent Stream Decrypt"),
+        ("6",  "💣 🔥",       "REPACK PAK",         "Zstd Fast Engine"),
+        ("7",  "🚀 🧩",       "REPACK ANY SIZE",    "Full In-place Rebuild"),
+        ("8",  "📍 🧭",       "REPACK TO PATH",     "Target Injection"),
+        ("9",  "🗑 ❌",        "DELETE CACHE",       "Clean Storage"),
+        ("H",  "🔐 ⚡",       "HARDEN PYTHON / SO", "Anti-Decompile Shield"),
+        ("0",  "🚪 🛑",       "EXIT BATTLEGROUND",  "Leave The Zone"),
+    ]
+    content = Text()
+    desc_col = 34  # fixed right column so descriptions never drift line to line
+    for idx, glyph, label, desc in slots:
+        line = Text()
+        line.append(f"[ {idx} ] ", style=f"bold {SKY_BLUE}")
+        line.append(f"{glyph}  ", style=f"bold {SKY_BLUE}")
+        line.append(label, style="bold white")
+        pad = max(1, desc_col - cell_len(line.plain))
+        line.append(" " * pad, style="")
+        line.append(f"{desc}", style=f"dim {SKY_BLUE}")
+        content.append(line)
+        content.append("\n")
+    content = Text(content.plain.rstrip("\n"))
+
+    return Panel(
+        content,
+        title=f"[bold {SKY_BLUE}]🎯 MAIN MENU — DEPLOY LOADOUT [/bold {SKY_BLUE}]",
+        subtitle=f"[bold {ACCENT_GOLD}]FRIEND — BATTLE READY[/bold {ACCENT_GOLD}]",
+        title_align="center",
+        subtitle_align="center",
+        border_style=SKY_BLUE,
+        box=HEAVY_EDGE,
+        padding=(1, 1),
+        expand=False,
+    )
+
+
 def main_menu():
     if getattr(sys, 'frozen', False):
         data_path = Path(sys.executable).parent
@@ -2547,23 +2636,10 @@ def main_menu():
     pak_tool_dir = data_path / 'PAK TOOL'
     while True:
         print_banner()
-        console.print("[bold cyan]╔══════════════════════════════════════╗[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold yellow]          MAIN MENU[/bold yellow]                [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]╠══════════════════════════════════════╣[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 1. UNIVERSAL DUMP[/bold white]  [dim](INPUT/)[/dim]        [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 2. REPACK FROM DUMP[/bold white] [dim](DUMP/)[/dim]       [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 3. OBB UNPACK[/bold white]  [dim](INPUT/)[/dim]           [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 4. OBB REPACK[/bold white] [dim](UNPACK/)[/dim]          [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 5. UNPACK ALL TYPES PAKS[/bold white]  [dim](PAK/)[/dim]  [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 6. REPACK ALL TYPES PAKS[/bold white] [dim](PAK/)[/dim] [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 7. REPACK ANY SIZE[/bold white] [dim](PAK TOOL/)[/dim]     [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 8. REPACK TO PATH[/bold white] [dim](PAK TOOL/)[/dim]     [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 9. DELETE FOLDER[/bold white]                 [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] H. HARDEN SCRIPT[/bold white] [dim](→ .so)[/dim]         [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]║[/bold cyan] [bold white] 0. EXIT[/bold white]                         [bold cyan]║[/bold cyan]")
-        console.print("[bold cyan]╚══════════════════════════════════════╝[/bold cyan]")
+        menu = _build_loadout_menu()
+        console.print(menu)
         console.print()
-        choice = safe_input('[bold yellow]ENTER CHOICE: [/bold yellow]').strip()
+        choice = safe_input(f'[bold {ACCENT_GOLD}]ENTER CHOICE: [/bold {ACCENT_GOLD}]').strip()
 
         if choice == '1':
             inputs = [f for f in input_dir.iterdir() if f.is_file()]
@@ -2844,7 +2920,7 @@ if __name__ == '__main__':
         safe_input('\nPress Enter to exit...')
         sys.exit(1)
         
-#🔰THIS TOOL MOD BY - @TrnDravix 🔰
-#🔰TELEGRAM SEARCH - @TrnDravix 🔰
-#🔰TELEGRAM CHANNEL - TrnDravix BGMI    🔰
-#🔰OWNER / MODER -TrnDravix TrnDravix           🔰
+#🔰 FRIEND BGMI TOOL - THIS TOOL MOD BY - @Friends6gg 🔰
+#🔰 TELEGRAM SEARCH - @Friends6gg 🔰
+#🔰 OWNER / AUTHOR - FRIEND 🔰
+#🔰 TAGLINE - FRIEND TACTICAL ENGINE 🔰
