@@ -1955,15 +1955,35 @@ def main_menu():
         choice = safe_input('[bold yellow]ENTER CHOICE: [/bold yellow]').strip()
 
         if choice == '1':
-            console.print(f'[bold cyan]📁 Scanning {input_dir}...[/bold cyan]')
             inputs = [f for f in input_dir.iterdir() if f.is_file()]
             if not inputs:
                 console.print('[bold #FFAA00]⚠ No files in INPUT/ — place files there first.[/bold #FFAA00]')
                 safe_input('\nPress Enter to continue...')
                 continue
-            console.print(f'[bold cyan]Found {len(inputs)} file(s) to dump[/bold cyan]')
+            table = Table(title=f"[bold cyan]📁 FILES IN INPUT/ ({len(inputs)} found)[/bold cyan]",
+                          border_style="#00FFFF", box=DOUBLE_EDGE)
+            table.add_column("#", justify="center", style="bold #FFFF00", width=4)
+            table.add_column("File Name", justify="left", style="bold #00FF88")
+            table.add_column("Size", justify="right", style="bold #00CCFF")
+            for i, f in enumerate(inputs, 1):
+                table.add_row(str(i), f.name, human_size(f.stat().st_size))
+            table.add_row("0", "[bold #FFFF00]DUMP ALL FILES[/bold #FFFF00]", f"[bold #FFFF00]{len(inputs)} files[/bold #FFFF00]")
+            console.print(table)
+            try:
+                sel = int(console.input('\n[bold #FFFF00]Select file number to dump: [/bold #FFFF00]'))
+            except ValueError:
+                sel = -1
+            if sel == 0:
+                chosen = inputs
+                console.print(f'[bold cyan]🚀 Dumping ALL {len(inputs)} file(s)...[/bold cyan]')
+            elif 1 <= sel <= len(inputs):
+                chosen = [inputs[sel - 1]]
+            else:
+                console.print('[bold #FF0055]❌ Invalid selection![/bold #FF0055]')
+                safe_input('\nPress Enter to continue...')
+                continue
             success, fail = 0, 0
-            for src in inputs:
+            for src in chosen:
                 try:
                     dest, fmt = dump_universal(src, dump_root)
                     console.print(f'[bold green]✅ {src.name} → {fmt} → {dest.name}/[/bold green]')
